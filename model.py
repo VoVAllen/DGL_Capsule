@@ -11,9 +11,10 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
-from conv_layer import ConvLayer
 from capsule_layer import CapsuleLayer
+from conv_layer import ConvLayer
 from decoder import Decoder
+from dgl_capsule_batch import DGLBatchCapsuleLayer
 
 
 class Net(nn.Module):
@@ -56,20 +57,20 @@ class Net(nn.Module):
         self.primary = CapsuleLayer(in_unit=0,
                                     in_channel=num_conv_out_channel,
                                     num_unit=num_primary_unit,
-                                    unit_size=primary_unit_size, # capsule outputs
+                                    unit_size=primary_unit_size,  # capsule outputs
                                     use_routing=False,
                                     num_routing=num_routing,
                                     cuda_enabled=cuda_enabled)
 
         # DigitCaps
         # Final layer: Capsule layer where the routing algorithm is.
-        self.digits = CapsuleLayer(in_unit=num_primary_unit,
-                                   in_channel=primary_unit_size,
-                                   num_unit=num_classes,
-                                   unit_size=output_unit_size, # 16D capsule per digit class
-                                   use_routing=True,
-                                   num_routing=num_routing,
-                                   cuda_enabled=cuda_enabled)
+        self.digits = DGLBatchCapsuleLayer(in_unit=num_primary_unit,
+                                           in_channel=primary_unit_size,
+                                           num_unit=num_classes,
+                                           unit_size=output_unit_size,  # 16D capsule per digit class
+                                           use_routing=True,
+                                           num_routing=num_routing,
+                                           cuda_enabled=cuda_enabled)
 
         # Reconstruction network
         if use_reconstruction_loss:
@@ -144,7 +145,7 @@ class Net(nn.Module):
         batch_size = input.size(0)
 
         # ||vc|| also known as norm.
-        v_c = torch.sqrt((input**2).sum(dim=2, keepdim=True))
+        v_c = torch.sqrt((input ** 2).sum(dim=2, keepdim=True))
 
         # Calculate left and right max() terms.
         zero = Variable(torch.zeros(1))
@@ -153,8 +154,8 @@ class Net(nn.Module):
         m_plus = 0.9
         m_minus = 0.1
         loss_lambda = 0.5
-        max_left = torch.max(m_plus - v_c, zero).view(batch_size, -1)**2
-        max_right = torch.max(v_c - m_minus, zero).view(batch_size, -1)**2
+        max_left = torch.max(m_plus - v_c, zero).view(batch_size, -1) ** 2
+        max_right = torch.max(v_c - m_minus, zero).view(batch_size, -1) ** 2
         t_c = target
         # Lc is margin loss for each digit of class c
         l_c = t_c * max_left + loss_lambda * (1.0 - t_c) * max_right
@@ -181,11 +182,11 @@ class Net(nn.Module):
         """
 
         # Calculate reconstruction loss.
-        batch_size = image.size(0) # or another way recon_img.size(0)
+        batch_size = image.size(0)  # or another way recon_img.size(0)
         # error = (recon_img - image).view(batch_size, -1)
-        image = image.view(batch_size, -1) # flatten 28x28 by reshaping to [batch_size, 784]
+        image = image.view(batch_size, -1)  # flatten 28x28 by reshaping to [batch_size, 784]
         error = reconstruction - image
-        squared_error = error**2
+        squared_error = error ** 2
 
         # Scalar Variable
         recon_error = torch.sum(squared_error, dim=1)
