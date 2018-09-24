@@ -12,20 +12,21 @@ Author: Cedric Chee
 """
 
 from __future__ import print_function
+
 import argparse
-from timeit import default_timer as timer
 import os
+from timeit import default_timer as timer
 
 import torch
 import torch.optim as optim
-from torch.backends import cudnn
-from torch.autograd import Variable
 import torchvision.utils as vutils
-from tensorboardX import SummaryWriter
+from torch.autograd import Variable
+from torch.backends import cudnn
 from tqdm import tqdm
 
 import utils
 from model import Net
+from utils import writer, step
 
 
 def train(model, data_loader, optimizer, epoch, writer):
@@ -40,7 +41,7 @@ def train(model, data_loader, optimizer, epoch, writer):
     """
     print('===> Training mode')
 
-    num_batches = len(data_loader) # iteration per epoch. e.g: 469
+    num_batches = len(data_loader)  # iteration per epoch. e.g: 469
     total_step = args.epochs * num_batches
     epoch_tot_acc = 0
 
@@ -56,6 +57,7 @@ def train(model, data_loader, optimizer, epoch, writer):
     for batch_idx, (data, target) in enumerate(tqdm(data_loader, unit='batch')):
         batch_size = data.size(0)
         global_step = batch_idx + (epoch * num_batches) - num_batches
+        step['step'] = global_step
 
         labels = target
         target_one_hot = utils.one_hot_encode(target, length=args.num_classes)
@@ -69,7 +71,7 @@ def train(model, data_loader, optimizer, epoch, writer):
 
         # Train step - forward, backward and optimize
         optimizer.zero_grad()
-        output = model(data) # output from DigitCaps (out_digit_caps)
+        output = model(data)  # output from DigitCaps (out_digit_caps)
         loss, margin_loss, recon_loss = model.loss(data, output, target)
         loss.backward()
         optimizer.step()
@@ -89,20 +91,20 @@ def train(model, data_loader, optimizer, epoch, writer):
         writer.add_scalar('train/accuracy', epoch_avg_acc, global_step)
 
         # 2) Log values and gradients of the parameters (histogram)
-        for tag, value in model.named_parameters():
-            tag = tag.replace('.', '/')
-            writer.add_histogram(tag, utils.to_np(value), global_step)
-            writer.add_histogram(tag + '/grad', utils.to_np(value.grad), global_step)
+        # for tag, value in model.named_parameters():
+        #     tag = tag.replace('.', '/')
+        #     writer.add_histogram(tag, utils.to_np(value), global_step)
+        #     writer.add_histogram(tag + '/grad', utils.to_np(value.grad), global_step)
 
         # Print losses
         if batch_idx % args.log_interval == 0:
             template = 'Epoch {}/{}, ' \
-                    'Step {}/{}: ' \
-                    '[Total loss: {:.6f},' \
-                    '\tMargin loss: {:.6f},' \
-                    '\tReconstruction loss: {:.6f},' \
-                    '\tBatch accuracy: {:.6f},' \
-                    '\tAccuracy: {:.6f}]'
+                       'Step {}/{}: ' \
+                       '[Total loss: {:.6f},' \
+                       '\tMargin loss: {:.6f},' \
+                       '\tReconstruction loss: {:.6f},' \
+                       '\tBatch accuracy: {:.6f},' \
+                       '\tAccuracy: {:.6f}]'
             tqdm.write(template.format(
                 epoch,
                 args.epochs,
@@ -145,6 +147,7 @@ def test(model, data_loader, num_train_batches, epoch, writer):
     num_batches = len(data_loader)
 
     global_step = epoch * num_train_batches + num_train_batches
+    step['step'] = global_step
 
     for data, target in data_loader:
         batch_size = data.size(0)
@@ -159,17 +162,17 @@ def test(model, data_loader, num_train_batches, epoch, writer):
             target = target.cuda()
 
         # Output predictions
-        output = model(data) # output from DigitCaps (out_digit_caps)
+        output = model(data)  # output from DigitCaps (out_digit_caps)
 
         # Sum up batch loss
         t_loss, m_loss, r_loss = model.loss(data, output, target, size_average=False)
-        loss += t_loss.item()
-        margin_loss += m_loss.item()
-        recon_loss += r_loss.item()
+        loss += t_loss.data[0]
+        margin_loss += m_loss.data[0]
+        recon_loss += r_loss.data[0]
 
         # Count number of correct predictions
         # v_magnitude shape: [128, 10, 1, 1]
-        v_magnitude = torch.sqrt((output**2).sum(dim=2, keepdim=True))
+        v_magnitude = torch.sqrt((output ** 2).sum(dim=2, keepdim=True))
         # pred shape: [128, 1, 1, 1]
         pred = v_magnitude.data.max(1, keepdim=True)[1].cpu()
         correct += pred.eq(target_indices.view_as(pred)).sum()
@@ -215,11 +218,11 @@ def test(model, data_loader, num_train_batches, epoch, writer):
 
     # Print test losses and accuracy
     print('Test: [Loss: {:.6f},' \
-        '\tMargin loss: {:.6f},' \
-        '\tReconstruction loss: {:.6f}]'.format(
-            loss,
-            margin_loss,
-            recon_loss if args.use_reconstruction_loss else 0))
+          '\tMargin loss: {:.6f},' \
+          '\tReconstruction loss: {:.6f}]'.format(
+        loss,
+        margin_loss,
+        recon_loss if args.use_reconstruction_loss else 0))
     print('Test Accuracy: {}/{} ({:.0f}%)\n'.format(
         correct, num_test_data, accuracy_percentage))
 
@@ -331,9 +334,6 @@ def main():
     # Make model checkpoint directory
     if not os.path.exists('results/trained_model'):
         os.makedirs('results/trained_model')
-
-    # Set the logger
-    writer = SummaryWriter()
 
     # Train and test
     for epoch in range(1, args.epochs + 1):

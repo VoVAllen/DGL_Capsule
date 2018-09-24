@@ -4,9 +4,18 @@ import torch.nn.functional as F
 from torch import nn
 
 from capsule_layer import CapsuleLayer
+# import main
+from utils import writer, step
+
+# global_step = main.global_step
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class DGLFeature():
+    """
+    To wrap different shape of representation tensor into the same shape
+    """
+
     def __init__(self, tensor, pad_to):
         # self.tensor = tensor
         self.node_num = tensor.size(0)
@@ -16,15 +25,18 @@ class DGLFeature():
         self.shape = tensor.shape
 
     @property
-    def of(self):
-        return self.flat_tensor.index_select(1, torch.arange(0, self.node_feature_dim).to("cuda")).view(self.shape)
+    def tensor(self):
+        """
+        :return: Tensor with original shape
+        """
+        return self.flat_tensor.index_select(1, torch.arange(0, self.node_feature_dim).to(device)).view(self.shape)
 
     @property
-    def nf(self):
+    def padded_tensor(self):
+        """
+        :return: Flatted and padded Tensor
+        """
         return self.flat_pad_tensor
-
-    def refill_flat(self, tensor):
-        self.flat_pad_tensor = tensor
 
 
 class DGLBatchCapsuleLayer(CapsuleLayer):
@@ -37,7 +49,7 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
 
     def routing(self, x):
 
-        batch_size = x.size(0)
+        self.batch_size = x.size(0)
 
         self.g = dgl.DGLGraph()
 
@@ -51,35 +63,37 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
         self.edge_features = torch.zeros(self.in_channel, self.num_unit).to('cuda')
 
         x_ = x.transpose(0, 2)
-        x_ = DGLFeature(x_, batch_size * 16)
+        x_ = DGLFeature(x_, self.batch_size * self.unit_size)
 
         x = x.transpose(1, 2)
         x = torch.stack([x] * self.num_unit, dim=2).unsqueeze(4)
-        W = torch.cat([self.weight.unsqueeze(0)] * batch_size, dim=0)
+        W = torch.cat([self.weight.unsqueeze(0)] * self.batch_size, dim=0)
         u_hat = torch.matmul(W, x).permute(1, 2, 0, 3, 4).squeeze().contiguous()
 
-        self.node_feature = DGLFeature(torch.zeros(self.num_unit, batch_size, self.unit_size).to('cuda'), batch_size * self.unit_size)
-        nf = torch.cat([x_.nf, self.node_feature.nf], dim=0)
+        self.node_feature = DGLFeature(torch.zeros(self.num_unit, self.batch_size, self.unit_size).to('cuda'),
+                                       self.batch_size * self.unit_size)
+        nf = torch.cat([x_.padded_tensor, self.node_feature.padded_tensor], dim=0)
 
         self.g.set_e_repr({'b_ij': self.edge_features.view(-1)})
         self.g.set_n_repr({'h': nf})
-        self.g.set_e_repr({'u_hat': u_hat.view(-1, batch_size, self.unit_size)})
+        self.g.set_e_repr({'u_hat': u_hat.view(-1, self.batch_size, self.unit_size)})
 
-        for _ in range(self.num_routing):
-            self.g.update_all(self.capsule_msg, self.capsule_reduce, lambda x: x, batchable=True)
-            self.g.set_n_repr({'h': self.g.get_n_repr()['__REPR__']})
-            self.update_edge()
+        for i in range(self.num_routing):
+            self.i = i
+            self.g.update_all(self.capsule_msg, self.capsule_reduce,
+                              lambda x: {'h': DGLFeature(x['h'], self.batch_size * self.unit_size).padded_tensor},
+                              batchable=True)
+            self.g.update_edge(dgl.base.ALL, dgl.base.ALL, self.update_edge, batchable=True)
 
-        self.node_feature = DGLFeature(
-            self.g.get_n_repr()['__REPR__'].index_select(0, torch.arange(self.in_channel,
-                                                                         self.in_channel + self.num_unit).to("cuda")),
-            batch_size * self.unit_size)
-        return self.node_feature.of.transpose(0, 1).unsqueeze(1).unsqueeze(4).squeeze(1)
+        self.node_feature = self.g.get_n_repr()['h'] \
+            .index_select(0, torch.arange(self.in_channel, self.in_channel + self.num_unit).to(device)) \
+            .view(self.num_unit, self.batch_size, self.unit_size)
+        return self.node_feature.transpose(0, 1).unsqueeze(1).unsqueeze(4).squeeze(1)
 
-    def update_edge(self):
-        self.g.update_edge(dgl.base.ALL, dgl.base.ALL,
-                           lambda u, v, edge: edge['b_ij'] + torch.sum(v['h'] * edge['u_hat']),
-                           batchable=True)
+    def update_edge(self, u, v, edge):
+        return {
+            'b_ij': edge['b_ij'] + (v['h'].view(-1, self.batch_size, self.unit_size) * edge['u_hat']).mean(dim=1).sum(
+                dim=1)}
 
     @staticmethod
     def capsule_msg(src, edge):
@@ -90,9 +104,10 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
         b_ij_c, h_c, u_hat_c = msg['b_ij'], msg['h'], msg['u_hat']
         u_hat = u_hat_c
         c_i = F.softmax(b_ij_c, dim=0)
+        writer.add_histogram(f"c_i{self.i}", c_i, step['step'])
         s_j = (c_i.unsqueeze(2).unsqueeze(3) * u_hat).sum(dim=1)
         v_j = self.squash(s_j)
-        return v_j
+        return {'h': v_j.view(-1, self.batch_size * self.unit_size)}
 
     @staticmethod
     def squash(s):

@@ -64,7 +64,7 @@ class Net(nn.Module):
 
         # DigitCaps
         # Final layer: Capsule layer where the routing algorithm is.
-        self.digits = DGLBatchCapsuleLayer(in_unit=num_primary_unit,
+        self.digits = CapsuleLayer(in_unit=num_primary_unit,
                                            in_channel=primary_unit_size,
                                            num_unit=num_classes,
                                            unit_size=output_unit_size,  # 16D capsule per digit class
