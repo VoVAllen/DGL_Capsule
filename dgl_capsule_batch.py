@@ -47,10 +47,6 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
         self.unit_size = unit_size
         self.weight = nn.Parameter(torch.randn(in_channel, num_unit, unit_size, in_unit))
 
-    def routing(self, x):
-
-        self.batch_size = x.size(0)
-
         self.g = dgl.DGLGraph()
 
         self.g.add_nodes_from([i for i in range(self.in_channel)])
@@ -59,6 +55,10 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
             for j in range(self.num_unit):
                 index_j = j + self.in_channel
                 self.g.add_edge(i, index_j)
+
+    def routing(self, x):
+
+        self.batch_size = x.size(0)
 
         self.edge_features = torch.zeros(self.in_channel, self.num_unit).to('cuda')
 
@@ -80,8 +80,8 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
 
         for i in range(self.num_routing):
             self.i = i
-            # self.g.update_all(self.capsule_msg, self.capsule_reduce, self.update_node, batchable=True)
-            self.g.update_all(self.capsule_msg, self.v2_reduce, self.v2_update, batchable=True)
+            self.g.update_all(self.capsule_msg, self.capsule_reduce, self.update_node, batchable=True)
+            # self.g.update_all(self.capsule_msg, self.v2_reduce, self.v2_update, batchable=True)
             self.g.update_edge(dgl.base.ALL, dgl.base.ALL, self.update_edge, batchable=True)
 
         self.node_feature = self.g.get_n_repr()['h'] \
