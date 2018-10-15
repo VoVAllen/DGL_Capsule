@@ -80,9 +80,8 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
 
         for i in range(self.num_routing):
             self.i = i
-            self.g.update_all(self.capsule_msg, self.capsule_reduce,
-                              lambda x: {'h': DGLFeature(x['h'], self.batch_size * self.unit_size).padded_tensor},
-                              batchable=True)
+            # self.g.update_all(self.capsule_msg, self.capsule_reduce, self.update_node, batchable=True)
+            self.g.update_all(self.capsule_msg, self.v2_reduce, self.v2_update, batchable=True)
             self.g.update_edge(dgl.base.ALL, dgl.base.ALL, self.update_edge, batchable=True)
 
         self.node_feature = self.g.get_n_repr()['h'] \
@@ -90,17 +89,20 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
             .view(self.num_unit, self.batch_size, self.unit_size)
         return self.node_feature.transpose(0, 1).unsqueeze(1).unsqueeze(4).squeeze(1)
 
+    def update_node(self, x):
+        return {'h': DGLFeature(x['h'], self.batch_size * self.unit_size).padded_tensor}
+
     def update_edge(self, u, v, edge):
         return {
             'b_ij': edge['b_ij'] + (v['h'].view(-1, self.batch_size, self.unit_size) * edge['u_hat']).mean(dim=1).sum(
-                dim=1)}
+                dim=1)
+        }
 
     @staticmethod
     def capsule_msg(src, edge):
         return {'b_ij': edge['b_ij'], 'h': src['h'], 'u_hat': edge['u_hat']}
 
     def capsule_reduce(self, node, msg):
-
         b_ij_c, h_c, u_hat_c = msg['b_ij'], msg['h'], msg['u_hat']
         u_hat = u_hat_c
         c_i = F.softmax(b_ij_c, dim=0)
@@ -116,3 +118,19 @@ class DGLBatchCapsuleLayer(CapsuleLayer):
         mag = torch.sqrt(mag_sq)
         s = (mag_sq / (1.0 + mag_sq)) * (s / mag)
         return s
+
+    def v2_reduce(self, node, msg):
+        b_ij_c, h_c, u_hat_c = msg['b_ij'], msg['h'], msg['u_hat']
+        u_hat = u_hat_c
+        c_i = F.softmax(b_ij_c, dim=0)
+        writer.add_histogram(f"c_i{self.i}", c_i, step['step'])
+        s_j = (c_i.unsqueeze(2).unsqueeze(3) * u_hat).sum(dim=1)
+        return {'h': s_j.view(-1, self.batch_size * self.unit_size)}
+
+    def v2_update(self, msg):
+        pre_layer_msgs = msg['h'][:1152]
+        msg = msg['h'][1152:].view(self.num_unit, self.batch_size, self.unit_size)
+        v_j = self.squash(msg)
+        return {
+            'h': DGLFeature(torch.cat([pre_layer_msgs, v_j.view(self.num_unit, -1)], dim=0),
+                            self.batch_size * self.unit_size).padded_tensor}
